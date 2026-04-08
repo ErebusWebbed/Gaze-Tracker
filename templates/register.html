@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Register Face — GazeTrack{% endblock %}
+
+{% block head %}
+<style>
+  .reg-layout { display: grid; grid-template-columns: 1fr 380px; gap: 2rem; align-items: start; }
+  #preview-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    aspect-ratio: 4/3;
+  }
+  #webcam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #overlay { pointer-events: none; }
+  .capture-strip { display: flex; gap: .5rem; margin-top: .75rem; flex-wrap: wrap; }
+  .thumb {
+    width: 72px; height: 54px;
+    border-radius: 5px;
+    border: 2px solid var(--border);
+    object-fit: cover;
+    transition: border-color .2s;
+  }
+  .thumb.captured { border-color: var(--accent); }
+  .thumb-empty {
+    width: 72px; height: 54px;
+    border-radius: 5px;
+    border: 2px dashed var(--border);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: .65rem; font-family: var(--mono);
+  }
+  #flash-msg { min-height: 2.5rem; }
+  .input-wrap { margin-bottom: 1.2rem; }
+  label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: .4rem; font-family: var(--mono); }
+  input[type=text] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    padding: .6rem .85rem;
+    font-family: var(--sans);
+    font-size: .9rem;
+    outline: none;
+    transition: border-color .2s;
+  }
+  input[type=text]:focus { border-color: var(--accent2); }
+  .step-row { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; font-size: .82rem; color: var(--muted); }
+  .step-num { font-family: var(--mono); color: var(--accent); width: 1.4rem; flex-shrink: 0; }
+  @media (max-width: 700px) { .reg-layout { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Register a Face</h1>
+<p class="subtitle">Capture 5 photos to build a face profile. No training needed — uses a pre-trained CNN.</p>
+
+<div class="reg-layout">
+  <!-- Left: webcam -->
+  <div>
+    <div id="preview-wrap">
+      <video id="webcam" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="capture-strip" id="thumbs"></div>
+    <div style="margin-top:1rem;display:flex;gap:.75rem;">
+      <button class="btn btn-primary" id="btn-capture" disabled>📷 Capture</button>
+      <button class="btn btn-secondary" id="btn-clear">🗑 Clear</button>
+    </div>
+  </div>
+
+  <!-- Right: form -->
+  <div>
+    <div class="card">
+      <h2>Person Details</h2>
+      <div id="flash-msg"></div>
+
+      <div class="input-wrap">
+        <label>FULL NAME</label>
+        <input type="text" id="name-input" placeholder="e.g. Alice Smith" autocomplete="off" />
+      </div>
+
+      <div style="margin-bottom:1.5rem;">
+        <div style="font-size:.75rem;color:var(--muted);font-family:var(--mono);margin-bottom:.75rem;">CAPTURE GUIDE</div>
+        <div class="step-row"><span class="step-num">01</span>Look directly at camera</div>
+        <div class="step-row"><span class="step-num">02</span>Slightly turn left, then right</div>
+        <div class="step-row"><span class="step-num">03</span>Good lighting on your face</div>
+        <div class="step-row"><span class="step-num">04</span>Capture 5 different angles</div>
+      </div>
+
+      <div style="margin-bottom:1.2rem;">
+        <div style="font-size:.75rem;color:var(--muted);font-family:var(--mono);margin-bottom:.5rem;">CAPTURED FRAMES</div>
+        <div class="progress-wrap">
+          <div class="progress-bar" id="capture-progress" style="width:0%"></div>
+        </div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.35rem;font-family:var(--mono);">
+          <span id="capture-count">0</span> / 5 captured
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-register" disabled style="width:100%;justify-content:center;padding:.7rem;">
+        ✅ Register Person
+      </button>
+    </div>
+
+    <!-- Registered persons list -->
+    <div class="card" style="margin-top:1rem;">
+      <h2>Registered Persons</h2>
+      <div id="persons-list" style="font-size:.85rem;">
+        <div style="color:var(--muted);">Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const MAX_CAPTURES = 5;
+let captures = [];
+let stream;
+
+async function startCam() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } });
+    const video = document.getElementById('webcam');
+    video.srcObject = stream;
+    await video.play();
+    document.getElementById('btn-capture').disabled = false;
+    drawLoop(video);
+  } catch(e) {
+    showFlash('Could not access webcam: ' + e.message, 'error');
+  }
+}
+
+function drawLoop(video) {
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  function frame() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Face guide oval
+    ctx.strokeStyle = captures.length >= MAX_CAPTURES ? '#00e5a0' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.ellipse(canvas.width/2, canvas.height/2, canvas.width*0.18, canvas.height*0.32, 0, 0, Math.PI*2);
+    ctx.stroke();
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+document.getElementById('btn-capture').addEventListener('click', () => {
+  if (captures.length >= MAX_CAPTURES) return;
+  const video = document.getElementById('webcam');
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  captures.push(c.toDataURL('image/jpeg', 0.85));
+  updateThumbs();
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  captures = [];
+  updateThumbs();
+});
+
+function updateThumbs() {
+  const strip = document.getElementById('thumbs');
+  strip.innerHTML = '';
+  for (let i = 0; i < MAX_CAPTURES; i++) {
+    if (captures[i]) {
+      const img = document.createElement('img');
+      img.src = captures[i]; img.className = 'thumb captured';
+      strip.appendChild(img);
+    } else {
+      const d = document.createElement('div');
+      d.className = 'thumb-empty'; d.textContent = (i+1).toString().padStart(2,'0');
+      strip.appendChild(d);
+    }
+  }
+  const pct = (captures.length / MAX_CAPTURES) * 100;
+  document.getElementById('capture-progress').style.width = pct + '%';
+  document.getElementById('capture-count').textContent = captures.length;
+  document.getElementById('btn-register').disabled = captures.length < 3 || !document.getElementById('name-input').value.trim();
+}
+
+document.getElementById('name-input').addEventListener('input', updateThumbs);
+
+document.getElementById('btn-register').addEventListener('click', async () => {
+  const name = document.getElementById('name-input').value.trim();
+  if (!name) { showFlash('Please enter a name.', 'error'); return; }
+  if (captures.length < 3) { showFlash('Need at least 3 captures.', 'error'); return; }
+
+  const btn = document.getElementById('btn-register');
+  btn.disabled = true; btn.textContent = '⏳ Registering...';
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, images: captures })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showFlash(`✅ ${data.name} registered with ${data.encodings_captured} face encodings.`, 'success');
+      captures = []; updateThumbs();
+      document.getElementById('name-input').value = '';
+      loadPersons();
+    } else {
+      showFlash('❌ ' + (data.error || 'Registration failed'), 'error');
+    }
+  } catch(e) {
+    showFlash('❌ Network error: ' + e.message, 'error');
+  }
+  btn.disabled = false; btn.textContent = '✅ Register Person';
+});
+
+function showFlash(msg, type) {
+  const el = document.getElementById('flash-msg');
+  el.innerHTML = `<div class="flash flash-${type === 'success' ? 'success' : 'error'}">${msg}</div>`;
+  setTimeout(() => el.innerHTML = '', 5000);
+}
+
+async function loadPersons() {
+  const res = await fetch('/api/persons');
+  const persons = await res.json();
+  const el = document.getElementById('persons-list');
+  if (!persons.length) { el.innerHTML = '<div style="color:var(--muted);">No persons registered yet.</div>'; return; }
+  el.innerHTML = persons.map(p => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:500;">${p.name}</div>
+        <div style="font-size:.72rem;color:var(--muted);">${p.total_sessions} sessions · avg ${p.avg_attention}%</div>
+      </div>
+      <button class="btn btn-danger" style="padding:.3rem .7rem;font-size:.75rem;" onclick="deletePerson(${p.id}, '${p.name}')">✕</button>
+    </div>
+  `).join('');
+}
+
+async function deletePerson(id, name) {
+  if (!confirm(`Delete ${name} and all their data?`)) return;
+  await fetch('/api/persons/' + id, { method: 'DELETE' });
+  loadPersons();
+}
+
+startCam();
+loadPersons();
+</script>
+{% endblock %}

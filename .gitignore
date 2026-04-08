@@ -1,0 +1,46 @@
+# ── Virtual environment ──────────────────────────────────────
+venv/
+env/
+.env/
+.venv/
+
+# ── Python cache ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ── Database (auto-created on first run) ─────────────────────
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# ── Face encodings (personal data, generated locally) ────────
+face_encodings.pkl
+*.pkl
+
+# ── Test images ───────────────────────────────────────────────
+test.jpg
+test.png
+
+# ── OS junk ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE files ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Distribution / build ─────────────────────────────────────
+dist/
+build/
+*.egg-info/

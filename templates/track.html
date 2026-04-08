@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Live Track — GazeTrack{% endblock %}
+
+{% block head %}
+<style>
+  .track-layout { display: grid; grid-template-columns: 1fr 300px; gap: 1.5rem; align-items: start; }
+  #feed-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    aspect-ratio: 4/3;
+  }
+  #video-feed { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #feed-placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: .75rem; color: var(--muted);
+    font-family: var(--mono); font-size: .8rem;
+  }
+  #feed-placeholder .big-icon { font-size: 3rem; }
+  .status-bar {
+    margin-top: .75rem;
+    display: flex; align-items: center; gap: .75rem;
+    font-size: .8rem; font-family: var(--mono); color: var(--muted);
+  }
+  #detection-cards { display: flex; flex-direction: column; gap: .75rem; }
+  .det-card {
+    padding: 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    transition: border-color .3s;
+  }
+  .det-card.looking { border-color: #1a4e35; }
+  .det-card.away    { border-color: #4e1a2a; }
+  .det-name { font-weight: 600; margin-bottom: .35rem; }
+  .det-row  { display: flex; justify-content: space-between; font-size: .75rem; color: var(--muted); margin-top: .3rem; }
+  .det-val  { font-family: var(--mono); color: var(--text); }
+  @media (max-width: 700px) { .track-layout { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Live Tracking</h1>
+<p class="subtitle">Streams your webcam feed with real-time face recognition + gaze analysis. Calibrates for ~30 frames first.</p>
+
+<div class="track-layout">
+  <!-- Video feed -->
+  <div>
+    <div id="feed-wrap">
+      <img id="video-feed" src="" alt="Live feed" style="display:none;" />
+      <div id="feed-placeholder">
+        <div class="big-icon">📡</div>
+        <div>Press Start to begin tracking</div>
+      </div>
+    </div>
+    <div class="status-bar">
+      <span class="dot dot-grey" id="status-dot"></span>
+      <span id="status-text">Stopped</span>
+      <div style="margin-left:auto;display:flex;gap:.75rem;">
+        <button class="btn btn-primary"  id="btn-start">▶ Start</button>
+        <button class="btn btn-secondary" id="btn-stop" disabled>⏹ Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detection panel -->
+  <div>
+    <div class="card" style="margin-bottom:1rem;">
+      <h2>Live Detections</h2>
+      <div id="detection-cards">
+        <div style="color:var(--muted);font-size:.82rem;">No active detections.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Session Totals</h2>
+      <div id="session-totals" style="font-size:.82rem;color:var(--muted);">
+        Start tracking to see data.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let polling = null;
+const sessionTotals = {};  // name -> {total, attentive}
+
+document.getElementById('btn-start').addEventListener('click', async () => {
+  const res = await fetch('/api/tracking/start', { method: 'POST' });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+
+  document.getElementById('video-feed').src = '/video_feed';
+  document.getElementById('video-feed').style.display = 'block';
+  document.getElementById('feed-placeholder').style.display = 'none';
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('status-dot').className = 'dot dot-green';
+  document.getElementById('status-text').textContent = 'Tracking live…';
+
+  polling = setInterval(pollStatus, 800);
+});
+
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  clearInterval(polling);
+  await fetch('/api/tracking/stop', { method: 'POST' });
+
+  document.getElementById('video-feed').src = '';
+  document.getElementById('video-feed').style.display = 'none';
+  document.getElementById('feed-placeholder').style.display = 'flex';
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  document.getElementById('status-dot').className = 'dot dot-grey';
+  document.getElementById('status-text').textContent = 'Stopped';
+  renderDetections([]);
+});
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/tracking/status');
+    const data = await res.json();
+    renderDetections(data.detections || []);
+  } catch(e) {}
+}
+
+function renderDetections(detections) {
+  const panel = document.getElementById('detection-cards');
+
+  if (!detections.length) {
+    panel.innerHTML = '<div style="color:var(--muted);font-size:.82rem;">No faces in frame.</div>';
+    return;
+  }
+
+  panel.innerHTML = '';
+
+  for (const d of detections) {
+    if (d.status === 'calibrating') {
+      const pct = Math.round((d.progress / d.total) * 100);
+      panel.innerHTML += `
+        <div class="det-card">
+          <div class="det-name" style="color:var(--warn);">⚙ Calibrating…</div>
+          <div style="margin-top:.5rem;">
+            <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:var(--warn);"></div></div>
+            <div style="font-size:.72rem;font-family:var(--mono);color:var(--muted);margin-top:.3rem;">${d.progress} / ${d.total} frames</div>
+          </div>
+        </div>`;
+      continue;
+    }
+
+    // Accumulate totals
+    if (d.name && d.name !== 'Unknown') {
+      if (!sessionTotals[d.name]) sessionTotals[d.name] = { total: 0, attentive: 0 };
+      sessionTotals[d.name].total++;
+      if (d.looking) sessionTotals[d.name].attentive++;
+    }
+
+    const badge = d.looking
+      ? '<span class="badge badge-green">FOCUSED</span>'
+      : '<span class="badge badge-red">AWAY</span>';
+
+    panel.innerHTML += `
+      <div class="det-card ${d.looking ? 'looking' : 'away'}">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="det-name">${d.name || 'Unknown'}</div>
+          ${badge}
+        </div>
+        <div class="det-row"><span>Confidence</span><span class="det-val">${d.confidence}%</span></div>
+        <div class="det-row"><span>Rolling (5s)</span><span class="det-val">${d.rolling_attention}%</span></div>
+        <div class="det-row"><span>Session</span><span class="det-val">${d.session_attention}%</span></div>
+        <div style="margin-top:.5rem;">
+          <div class="progress-wrap">
+            <div class="progress-bar" style="width:${d.session_attention}%;${d.session_attention < 40 ? 'background:var(--danger)' : ''}"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  renderSessionTotals();
+}
+
+function renderSessionTotals() {
+  const el = document.getElementById('session-totals');
+  const names = Object.keys(sessionTotals);
+  if (!names.length) { el.innerHTML = '<div style="color:var(--muted);">No data yet.</div>'; return; }
+
+  el.innerHTML = names.map(name => {
+    const { total, attentive } = sessionTotals[name];
+    const pct = total ? Math.round((attentive / total) * 100) : 0;
+    return `
+      <div style="margin-bottom:.75rem;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:.3rem;">
+          <span style="font-weight:500;">${name}</span>
+          <span style="font-family:var(--mono);color:var(--accent);">${pct}%</span>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar" style="width:${pct}%;${pct<40?'background:var(--danger)':''}"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:.2rem;font-family:var(--mono);">${attentive}/${total} frames attentive</div>
+      </div>`;
+  }).join('');
+}
+</script>
+{% endblock %}

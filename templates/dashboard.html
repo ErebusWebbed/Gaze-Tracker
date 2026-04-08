@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — GazeTrack{% endblock %}
+
+{% block head %}
+<style>
+  .filter-bar { display:flex; gap:.75rem; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; }
+  select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    padding: .45rem .75rem;
+    font-family: var(--sans);
+    font-size: .85rem;
+    outline: none;
+    cursor: pointer;
+  }
+  .chart-wrap {
+    width: 100%;
+    height: 180px;
+    position: relative;
+    margin-top: 1rem;
+  }
+  svg.bar-chart { width: 100%; height: 100%; }
+  .empty-state { text-align:center; padding:3rem; color:var(--muted); font-family:var(--mono); font-size:.85rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">All stored sessions and attention analytics per registered person.</p>
+
+<!-- Summary stats -->
+<div class="stat-grid" id="stat-grid">
+  <div class="card stat-box"><div class="stat-label">Registered Persons</div><div class="stat-value" id="stat-persons">—</div></div>
+  <div class="card stat-box"><div class="stat-label">Total Sessions</div><div class="stat-value" id="stat-sessions">—</div></div>
+  <div class="card stat-box"><div class="stat-label">Avg Attention</div><div class="stat-value" id="stat-avg">—</div></div>
+</div>
+
+<!-- Per-person chart -->
+<div class="card" style="margin-bottom:1.5rem;">
+  <h2>Attention per Person</h2>
+  <div class="chart-wrap" id="person-chart">
+    <div class="empty-state">No data yet.</div>
+  </div>
+</div>
+
+<!-- Sessions table -->
+<div class="card">
+  <div class="filter-bar">
+    <h2 style="margin:0;">Sessions</h2>
+    <select id="filter-person">
+      <option value="">All persons</option>
+    </select>
+    <button class="btn btn-secondary" onclick="loadSessions()" style="margin-left:auto;">🔄 Refresh</button>
+  </div>
+  <div style="overflow-x:auto;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Person</th>
+          <th>Started</th>
+          <th>Duration</th>
+          <th>Frames</th>
+          <th>Attention</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-tbody">
+        <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function loadSummary() {
+  const res = await fetch('/api/stats/summary');
+  const d = await res.json();
+  document.getElementById('stat-persons').textContent  = d.total_persons;
+  document.getElementById('stat-sessions').textContent = d.total_sessions;
+  document.getElementById('stat-avg').textContent      = d.avg_attention + '%';
+}
+
+async function loadPersons() {
+  const res = await fetch('/api/persons');
+  const persons = await res.json();
+  const sel = document.getElementById('filter-person');
+  persons.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id; opt.textContent = p.name;
+    sel.appendChild(opt);
+  });
+  renderPersonChart(persons);
+}
+
+function renderPersonChart(persons) {
+  const wrap = document.getElementById('person-chart');
+  if (!persons.length) return;
+
+  const W = wrap.clientWidth || 800;
+  const H = 180;
+  const pad = { top: 10, right: 10, bottom: 40, left: 10 };
+  const n   = persons.length;
+  const barW = Math.min(60, (W - pad.left - pad.right) / n - 8);
+
+  let svg = `<svg class="bar-chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+
+  persons.forEach((p, i) => {
+    const x    = pad.left + i * ((W - pad.left - pad.right) / n) + ((W - pad.left - pad.right) / n - barW) / 2;
+    const pct  = p.avg_attention || 0;
+    const barH = ((H - pad.top - pad.bottom) * pct) / 100;
+    const y    = H - pad.bottom - barH;
+    const color= pct >= 70 ? '#00e5a0' : pct >= 40 ? '#5b7cfa' : '#ff4e6a';
+
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" rx="4" fill="${color}" opacity="0.85"/>`;
+    svg += `<text x="${x + barW/2}" y="${y - 5}" text-anchor="middle" font-size="11" fill="${color}" font-family="Space Mono">${pct}%</text>`;
+    // Name label — truncate
+    const label = p.name.length > 8 ? p.name.slice(0,7) + '…' : p.name;
+    svg += `<text x="${x + barW/2}" y="${H - pad.bottom + 14}" text-anchor="middle" font-size="10" fill="#5a6478" font-family="DM Sans">${label}</text>`;
+  });
+
+  svg += '</svg>';
+  wrap.innerHTML = svg;
+}
+
+async function loadSessions() {
+  const personId = document.getElementById('filter-person').value;
+  const url = '/api/sessions' + (personId ? '?person_id=' + personId : '');
+  const res = await fetch(url);
+  const sessions = await res.json();
+  const tbody = document.getElementById('sessions-tbody');
+
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem;">No sessions recorded yet.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sessions.map(s => {
+    const score = s.attention_score;
+    const badgeClass = score >= 70 ? 'badge-green' : score >= 40 ? 'badge-blue' : 'badge-red';
+    const dur = s.duration_seconds >= 60
+      ? Math.floor(s.duration_seconds/60) + 'm ' + (s.duration_seconds%60) + 's'
+      : s.duration_seconds + 's';
+    const bar = `<div style="display:flex;align-items:center;gap:.5rem;">
+      <div class="progress-wrap" style="width:80px;flex-shrink:0;">
+        <div class="progress-bar" style="width:${score}%;${score<40?'background:var(--danger)':''}"></div>
+      </div>
+      <span class="badge ${badgeClass}">${score}%</span>
+    </div>`;
+
+    return `<tr>
+      <td><span style="font-weight:500;">${s.person_name}</span></td>
+      <td style="font-family:var(--mono);font-size:.78rem;color:var(--muted);">${s.started_at}</td>
+      <td style="font-family:var(--mono);font-size:.8rem;">${dur}</td>
+      <td style="font-family:var(--mono);font-size:.8rem;">${s.total_frames}</td>
+      <td style="font-family:var(--mono);font-size:.78rem;color:var(--muted);">${s.attentive_frames} attentive</td>
+      <td>${bar}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.getElementById('filter-person').addEventListener('change', loadSessions);
+
+loadSummary();
+loadPersons();
+loadSessions();
+</script>
+{% endblock %}
